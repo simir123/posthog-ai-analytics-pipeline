@@ -2,16 +2,14 @@ import os
 import requests
 import pandas as pd
 from datetime import datetime
-from dotenv import load_dotenv
+from env_config import get_env
 import matplotlib.pyplot as plt
-
-load_dotenv()
 
 # This is the configuration for the API
 project_id = 14686
 
-api_url = os.getenv("POSTHOG_API_URL", "https://us.posthog.com")
-api_key = os.getenv("POSTHOG_PERSONAL_API_KEY")
+api_url = os.environ.get("POSTHOG_API_URL", "https://us.posthog.com")
+api_key = get_env("POSTHOG_PERSONAL_API_KEY")
 
 # 
 headers = {

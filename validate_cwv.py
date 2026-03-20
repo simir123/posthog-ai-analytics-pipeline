@@ -11,13 +11,11 @@ Usage:
 import os
 import time
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
+from env_config import get_env
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-API_KEY  = os.getenv("PAGESPEED_API_KEY")
+API_KEY  = get_env("PAGESPEED_API_KEY")
 API_URL  = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 STRATEGY = "mobile"
 DEBUG    = True

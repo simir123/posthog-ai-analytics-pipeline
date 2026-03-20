@@ -3,12 +3,10 @@ import re
 import time
 import requests
 import pandas as pd
-from dotenv import load_dotenv
+from env_config import get_env
 
-load_dotenv()
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-env_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_API_KEY = get_env("GROQ_API_KEY")
+env_model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 GROQ_MODEL = env_model
 
 SYSTEM_PROMPT = """You are a senior SEO analyst writing a weekly report for Arka, a Shopify-based company selling custom eco-friendly packaging (mailer boxes, shipping boxes, poly mailers, inserts, carton boxes). You write inline annotations for data sections — NOT a standalone report.

@@ -13,11 +13,9 @@ import os
 import time
 import requests
 import pandas as pd
-from dotenv import load_dotenv
+from env_config import get_env
 
-load_dotenv()
-
-PSI_API_KEY    = os.getenv("PAGESPEED_API_KEY")
+PSI_API_KEY    = get_env("PAGESPEED_API_KEY")
 PSI_URL        = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 STRATEGY       = "mobile"
 BASE_DOMAIN    = "https://arka.com"
