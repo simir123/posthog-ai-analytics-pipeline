@@ -444,7 +444,14 @@ def _chart_ecommerce_funnel():
         ax.set_axisbelow(True)
         _base_ax_style(ax)
         plt.tight_layout()
-        flowables += [_img(_save_fig(fig), h=3.5), Spacer(1, 0.2*inch)]
+        flowables += [_img(_save_fig(fig), h=3.5), Spacer(1, 0.05*inch)]
+        flowables.append(Paragraph(
+            '<i>Note: Starting this week, "Product Viewed" counts all product detail page loads '
+            '(/products/* pageviews) for more comprehensive coverage. Prior reports used a narrower '
+            'custom event that undercounted product views, so view-based metrics are not directly '
+            'comparable to earlier weeks.</i>',
+            _note_style))
+        flowables.append(Spacer(1, 0.15*inch))
 
     # ── per-product grouped bar chart ──
     if _csv_exists_nonempty(product_path):
@@ -815,7 +822,7 @@ def _chart_landing_pages_organic():
         except Exception:
             path = str(url)
         if not path or path == '':
-            path = '/'
+            path = 'Arka Homepage'
         if len(path) > max_len:
             path = path[:max_len - 3] + '...'
         return path

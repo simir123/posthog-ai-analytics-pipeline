@@ -531,10 +531,35 @@ def fetch_popup_conversion_funnel():
 def fetch_ecommerce_funnel():
     print("Fetching e-commerce funnel")
 
-    events = ["product_viewed", "add_to_cart", "checkout_started", "order_completed"]
+    # The overall funnel uses $pageview on /products/ paths as the first step
+    # instead of the narrower custom product_viewed event. This provides a more
+    # comprehensive count of product detail page views, since the Shopify pixel
+    # does not fire product_viewed consistently on every PDP load.
     rows = []
 
-    for event in events:
+    # Step 1: Product Viewed — count $pageview events on /products/ pages
+    pv_query = {
+        "kind": "HogQLQuery",
+        "query": """
+            SELECT count() AS cnt
+            FROM events
+            WHERE event = '$pageview'
+              AND timestamp >= now() - INTERVAL 7 DAY
+              AND properties."$pathname" LIKE '/products/%'
+              AND properties."$pathname" NOT LIKE '/products'
+        """
+    }
+    r = requests.post(f"{api_url}/api/projects/{project_id}/query/", headers=headers, json={"query": pv_query})
+    if r.status_code != 200:
+        print("Funnel error for product_viewed ($pageview proxy):", r.status_code, r.text)
+        pv_count = 0
+    else:
+        results = r.json().get("results", [])
+        pv_count = int(results[0][0] or 0) if results else 0
+    rows.append({"event": "product_viewed", "count": pv_count})
+
+    # Steps 2-4: add_to_cart, checkout_started, order_completed (unchanged)
+    for event in ["add_to_cart", "checkout_started", "order_completed"]:
         query = {
             "kind": "TrendsQuery",
             "series": [{"event": event}],
@@ -564,116 +589,213 @@ def fetch_ecommerce_funnel():
     print("E-commerce funnel saved to data/ecommerce_funnel.csv")
 
 
+def _slug_from_path(path):
+    """Extract product slug from a /products/<slug> URL path."""
+    import re
+    m = re.match(r'/products/([^/?#]+)', str(path))
+    return m.group(1).lower() if m else None
+
+
+def _title_from_slug(slug):
+    """Convert a URL slug like 'custom-mailer-boxes' to 'Custom Mailer Boxes'."""
+    return str(slug).replace('-', ' ').title()
+
+
+def _hog_query(sql):
+    """Run a HogQL query and return results list, or [] on error."""
+    r = requests.post(
+        f"{api_url}/api/projects/{project_id}/query/",
+        headers=headers,
+        json={"query": {"kind": "HogQLQuery", "query": sql}},
+        timeout=60
+    )
+    if r.status_code != 200:
+        print(f"  HogQL error: {r.status_code} {r.text[:200]}")
+        return []
+    return r.json().get("results", [])
+
+
+def _build_slug_title_map():
+    """Build a slug→product_title lookup from events that carry both
+    product_title and a /products/ page_url (90-day window for coverage).
+    Falls back to _title_from_slug for unmapped slugs."""
+    import re
+    rows = _hog_query("""
+        SELECT properties.product_title, properties.page_url, count() AS cnt
+        FROM events
+        WHERE timestamp >= now() - INTERVAL 90 DAY
+          AND properties.product_title IS NOT NULL
+          AND properties.product_title != ''
+          AND properties.product_title != 'Carbon Neutral Order'
+          AND properties.page_url LIKE '%/products/%'
+        GROUP BY properties.product_title, properties.page_url
+        ORDER BY cnt DESC
+        LIMIT 500
+    """)
+    slug_to_title = {}
+    slug_best_cnt = {}
+    for title, url, cnt in rows:
+        m = re.search(r'/products/([^/?#]+)', str(url))
+        if not m:
+            continue
+        slug = m.group(1).lower()
+        cnt = int(cnt or 0)
+        if slug not in slug_best_cnt or cnt > slug_best_cnt[slug]:
+            slug_to_title[slug] = title
+            slug_best_cnt[slug] = cnt
+    return slug_to_title
+
+
 def fetch_product_conversion_funnels():
+    """Per-product conversion funnels.
+
+    Product views are sourced from $pageview events on /products/* pages rather
+    than the custom product_viewed event, which was found to undercount true
+    product detail page views.
+
+    Add-to-cart and order attribution use user-level (distinct_id) matching:
+    an add_to_cart or order_completed is attributed to a product slug if the
+    same distinct_id also had a $pageview on that product's PDP during the
+    same 7-day window. This avoids fragile title-to-slug string matching.
+
+    Reports before this change are not directly comparable for view-based metrics.
+    """
     print("Fetching per-product conversion funnels")
-
-    # Query 1: views and add_to_cart per product
-    funnel_query = {
-        "kind": "HogQLQuery",
-        "query": """
-            SELECT
-                properties.product_title AS product_title,
-                countIf(event = 'product_viewed')  AS views,
-                countIf(event = 'add_to_cart')     AS add_to_cart_count,
-                round(
-                    if(countIf(event = 'product_viewed') > 0,
-                       countIf(event = 'add_to_cart') * 100.0 / countIf(event = 'product_viewed'),
-                       0),
-                    2
-                ) AS view_to_cart_rate_pct
-            FROM events
-            WHERE event IN ('product_viewed', 'add_to_cart')
-              AND timestamp >= now() - INTERVAL 7 DAY
-              AND properties.product_title IS NOT NULL
-              AND properties.product_title != ''
-            GROUP BY product_title
-            HAVING countIf(event = 'product_viewed') > 0
-            ORDER BY views DESC
-        """
-    }
-
-    # Query 2: order_completed events attributed to a product via distinct_id.
-    # order_completed has no product_title property (it's a cart-level event), so we
-    # attribute an order to a product when the same user viewed that product in the period.
-    orders_query = {
-        "kind": "HogQLQuery",
-        "query": """
-            SELECT pv.product_title, count() AS orders_completed
-            FROM events AS oc
-            INNER JOIN (
-                SELECT DISTINCT distinct_id, properties.product_title AS product_title
-                FROM events
-                WHERE event = 'product_viewed'
-                  AND timestamp >= now() - INTERVAL 7 DAY
-                  AND properties.product_title IS NOT NULL
-                  AND properties.product_title != ''
-            ) AS pv ON oc.distinct_id = pv.distinct_id
-            WHERE oc.event = 'order_completed'
-              AND oc.timestamp >= now() - INTERVAL 7 DAY
-            GROUP BY pv.product_title
-        """
-    }
+    from collections import defaultdict
 
     empty_df = pd.DataFrame({
         "product_title": [], "views": [], "add_to_cart_count": [],
         "orders_completed": [], "view_to_cart_rate_pct": [], "view_to_order_rate_pct": []
     })
 
-    r1 = requests.post(f"{api_url}/api/projects/{project_id}/query/", headers=headers, json={"query": funnel_query})
-    if r1.status_code != 200:
-        print("Product funnels error:", r1.status_code, r1.text)
+    # ── Step 1: aggregate views per product slug ─────────────────────────────
+    view_rows = _hog_query("""
+        SELECT properties."$pathname" AS path, count() AS views
+        FROM events
+        WHERE event = '$pageview'
+          AND timestamp >= now() - INTERVAL 7 DAY
+          AND properties."$pathname" LIKE '/products/%'
+          AND properties."$pathname" NOT LIKE '/products'
+        GROUP BY path
+        ORDER BY views DESC
+        LIMIT 200
+    """)
+    if not view_rows:
+        print("Product funnels: no pageview data found")
         empty_df.to_csv("data/product_conversion_funnels.csv", index=False)
         return
 
-    results1 = r1.json().get("results", [])
-    if not results1:
-        print("Product funnels: no data found")
+    slug_views = defaultdict(int)
+    for path, views in view_rows:
+        slug = _slug_from_path(path)
+        if slug:
+            slug_views[slug] += int(views)
+
+    if not slug_views:
         empty_df.to_csv("data/product_conversion_funnels.csv", index=False)
         return
 
+    # ── Step 2: distinct_id → slugs viewed (for user-level attribution) ──────
+    user_rows = _hog_query("""
+        SELECT DISTINCT distinct_id, properties."$pathname" AS path
+        FROM events
+        WHERE event = '$pageview'
+          AND timestamp >= now() - INTERVAL 7 DAY
+          AND properties."$pathname" LIKE '/products/%'
+          AND properties."$pathname" NOT LIKE '/products'
+        LIMIT 50000
+    """)
+    user_slugs = defaultdict(set)
+    for did, path in user_rows:
+        slug = _slug_from_path(path)
+        if slug:
+            user_slugs[did].add(slug)
+
+    # ── Step 3: attribute add_to_cart to slugs via distinct_id overlap ────────
+    # Excludes "Carbon Neutral Order" (EcoCart upsell, not a real product).
+    atc_rows = _hog_query("""
+        SELECT distinct_id
+        FROM events
+        WHERE event = 'add_to_cart'
+          AND timestamp >= now() - INTERVAL 7 DAY
+          AND properties.product_title IS NOT NULL
+          AND properties.product_title != ''
+          AND properties.product_title != 'Carbon Neutral Order'
+        LIMIT 50000
+    """)
+    slug_atc = defaultdict(int)
+    for (did,) in atc_rows:
+        if did in user_slugs:
+            for slug in user_slugs[did]:
+                slug_atc[slug] += 1
+
+    # ── Step 4: attribute orders to slugs via distinct_id overlap ─────────────
+    order_rows = _hog_query("""
+        SELECT distinct_id
+        FROM events
+        WHERE event = 'order_completed'
+          AND timestamp >= now() - INTERVAL 7 DAY
+        LIMIT 50000
+    """)
+    slug_orders = defaultdict(int)
+    for (did,) in order_rows:
+        if did in user_slugs:
+            for slug in user_slugs[did]:
+                slug_orders[slug] += 1
+
+    # ── Step 5: slug → product_title mapping ─────────────────────────────────
+    slug_to_title = _build_slug_title_map()
+
+    # ── Assemble final dataframe ─────────────────────────────────────────────
     rows = []
-    for row in results1:
+    for slug, views in slug_views.items():
+        if slug.strip().lower() == "test":
+            continue
+        atc = slug_atc.get(slug, 0)
+        orders = slug_orders.get(slug, 0)
         rows.append({
-            "product_title":         row[0],
-            "views":                 int(row[1] or 0),
-            "add_to_cart_count":     int(row[2] or 0),
-            "view_to_cart_rate_pct": float(row[3] or 0),
+            "product_title": slug_to_title.get(slug, _title_from_slug(slug)),
+            "views": views,
+            "add_to_cart_count": atc,
+            "view_to_cart_rate_pct": round(atc / views * 100, 2) if views > 0 else 0,
+            "view_to_order_rate_pct": round(orders / views * 100, 2) if views > 0 else 0,
+            "orders_completed": orders,
         })
-    df = pd.DataFrame(rows)
-    df = df[~df["product_title"].str.strip().str.lower().eq("test")]
 
-    # Fetch order attribution and merge
-    r2 = requests.post(f"{api_url}/api/projects/{project_id}/query/", headers=headers, json={"query": orders_query})
-    if r2.status_code == 200:
-        orders_map = {row[0]: int(row[1] or 0) for row in r2.json().get("results", [])}
-    else:
-        print("Order attribution warning:", r2.status_code, "— orders_completed will be 0")
-        orders_map = {}
+    if not rows:
+        empty_df.to_csv("data/product_conversion_funnels.csv", index=False)
+        return
 
-    df["orders_completed"] = df["product_title"].map(orders_map).fillna(0).astype(int)
-    df["view_to_order_rate_pct"] = df.apply(
-        lambda r: round(r["orders_completed"] / r["views"] * 100, 2) if r["views"] > 0 else 0,
-        axis=1
-    )
-
+    df = pd.DataFrame(rows).sort_values("views", ascending=False)
     df = df[["product_title", "views", "add_to_cart_count", "view_to_cart_rate_pct",
              "view_to_order_rate_pct", "orders_completed"]]
     df.to_csv("data/product_conversion_funnels.csv", index=False)
-    print(f"Product conversion funnels saved: {len(rows)} products")
+    print(f"Product conversion funnels saved: {len(df)} products")
 
 
 def fetch_top_products():
+    """Top viewed products using $pageview on /products/* paths.
+
+    Uses $pageview filtered to PDP URLs as the canonical product view metric
+    instead of the custom product_viewed event, which undercounts true product
+    page views. Reports before this change are not directly comparable.
+    """
     print("Fetching top viewed products")
 
     query = {
-        "kind": "TrendsQuery",
-        "series": [{"event": "product_viewed"}],
-        "interval": "day",
-        "dateRange": {"date_from": "-7d"},
-        "breakdownFilter": {
-            "breakdown": "product_title",
-            "breakdown_type": "event"
-        }
+        "kind": "HogQLQuery",
+        "query": """
+            SELECT
+                properties."$pathname" AS path,
+                count() AS views
+            FROM events
+            WHERE event = '$pageview'
+              AND timestamp >= now() - INTERVAL 7 DAY
+              AND properties."$pathname" LIKE '/products/%'
+              AND properties."$pathname" NOT LIKE '/products'
+            GROUP BY path
+            ORDER BY views DESC
+        """
     }
 
     r = requests.post(f"{api_url}/api/projects/{project_id}/query/", headers=headers, json={"query": query})
@@ -683,17 +805,19 @@ def fetch_top_products():
 
     results = r.json().get("results", [])
     rows = []
-    for entry in results:
-        product_title = entry.get("breakdown_value", "unknown")
-        data_points = entry.get("data", [])
-        total_views = sum(data_points) if isinstance(data_points, list) else 0
-        rows.append({"product_title": product_title, "views": total_views})
+    for row in results:
+        slug = _slug_from_path(row[0])
+        if slug and slug.lower() != "test":
+            rows.append({"slug": slug, "views": int(row[1] or 0)})
 
-    rows = [r for r in rows if r["product_title"].strip().lower() != "test"]
     if rows:
-        df = pd.DataFrame(rows).sort_values("views", ascending=False)
+        df = pd.DataFrame(rows).groupby("slug", as_index=False).sum()
+        slug_to_title = _build_slug_title_map()
+        df["product_title"] = df["slug"].apply(
+            lambda s: slug_to_title.get(s, _title_from_slug(s)))
+        df = df[["product_title", "views"]].sort_values("views", ascending=False)
         df.to_csv("data/top_products.csv", index=False)
-        print(f"Top products saved: {len(rows)} products tracked")
+        print(f"Top products saved: {len(df)} products tracked")
     else:
         pd.DataFrame({"product_title": [], "views": []}).to_csv("data/top_products.csv", index=False)
         print("Top products: no data found")

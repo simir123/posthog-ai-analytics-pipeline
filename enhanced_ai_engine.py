@@ -12,12 +12,13 @@ GROQ_MODEL = env_model
 SYSTEM_PROMPT = """You are a senior SEO analyst writing a weekly report for Arka, a Shopify-based company selling custom eco-friendly packaging (mailer boxes, shipping boxes, poly mailers, inserts, carton boxes). You write inline annotations for data sections — NOT a standalone report.
 
 Business context:
-- Primary conversion funnel: product_viewed → add_to_cart → checkout_started → order_completed
+- Primary conversion funnel: Product Viewed (PDP pageviews) → add_to_cart → checkout_started → order_completed
+- "Product Viewed" is measured as $pageview events on /products/* URLs, NOT the custom product_viewed event. This gives a comprehensive count of all product detail page loads.
+- Methodology change: reports before 2026-03-31 used the custom product_viewed event which undercounted true product views. View-based metrics (product views, view-to-cart rates) in older reports are not directly comparable.
 - Separate "request a quote" flow for custom/bulk orders (/pages/custom-order) and free sample requests (/pages/free-sample)
 - Key SEO pages: /products/custom-mailer-boxes, /products/custom-shipping-boxes, /products/custom-poly-mailer, /collections/custom-boxes, /collections/custom-ecommerce-packaging
 - "Boxes by size" pages are high-intent long-tail pages — traffic changes there are commercially significant
 - Blog serves as content marketing and SEO; posts driving organic traffic are top-of-funnel assets
-- add_to_cart counts often exceed product_viewed counts — this is expected, not a data error
 - WAU counts unique users in the 7-day window — do not sum DAU to get WAU
 - Organic bounce rate benchmark for B2B packaging: 40-55% typical, 65%+ is a problem
 - Cart abandonment ~70% is industry average; checkout abandonment ~25-35% is typical
@@ -64,8 +65,8 @@ _SECTION_HINTS = {
     "Supporting Product / UX Insights":    "",
     "User Activity":                       "Focus on: did engagement trend up or down, and is the WoW change significant enough to act on?",
     "Referrers by Traffic":                "Focus on: channel mix shifts and whether any non-direct channels are converting.",
-    "E-Commerce Conversion Funnel":        "Focus on: where the biggest drop-off is in the funnel and the cart-to-checkout vs checkout-to-order rates.",
-    "Top Viewed Products":                 "Focus on: which products have high views but low conversion, and whether product view data looks complete.",
+    "E-Commerce Conversion Funnel":        "Focus on: where the biggest drop-off is in the funnel and the cart-to-checkout vs checkout-to-order rates. Note: Product Viewed now counts all PDP pageviews (/products/*), so view-to-cart drop-off rates are more accurate than prior reports.",
+    "Top Viewed Products":                 "Focus on: which products have high views but low conversion. Product views now use PDP pageviews for comprehensive coverage.",
     "Popup Performance Metrics":           "Focus on: are the popups helping or hurting — compare click rate to dismissal rate and flag if they're net negative.",
     "Daily Revenue":                       "Focus on: revenue trend shape this week and whether spikes/dips correlate with traffic patterns.",
     "Average Order Value":                 "Focus on: is the AOV increase sustainable or driven by a few large orders?",
