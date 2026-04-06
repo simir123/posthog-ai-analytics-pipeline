@@ -44,7 +44,13 @@ def _save_fig(fig):
     plt.close(fig)
     return tmp.name
 
+MAX_H = 9.0  # max image height in inches (page frame ≈ 9.33in)
+
 def _img(path, w=W, h=H):
+    if h > MAX_H:
+        scale = MAX_H / h
+        w = w * scale
+        h = MAX_H
     return Image(path, width=w * inch, height=h * inch)
 
 def _base_ax_style(ax):
@@ -459,7 +465,8 @@ def _chart_ecommerce_funnel():
         pdf = pdf[~pdf['product_title'].str.lower().str.contains('test', na=False)]
         pdf = pdf[pdf['view_to_cart_rate_pct'] <= 500]
         if not pdf.empty:
-            # Grouped bar: views, add_to_cart, orders per product
+            # Limit to top 20 products by views for readable chart
+            pdf = pdf.nlargest(20, 'views').reset_index(drop=True)
             n = len(pdf)
             x = list(range(n))
             bar_w = 0.25

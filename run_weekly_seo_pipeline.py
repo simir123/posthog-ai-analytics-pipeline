@@ -12,7 +12,7 @@ Usage:
 
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 STAGES = [
@@ -23,7 +23,7 @@ STAGES = [
 
 
 def run() -> None:
-    start = datetime.utcnow()
+    start = datetime.now(timezone.utc)
     print("=" * 60)
     print(f"Weekly SEO Pipeline  —  {start.strftime('%Y-%m-%d %H:%M UTC')}")
     print("=" * 60)
